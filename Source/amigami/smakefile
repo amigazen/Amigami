@@ -1,0 +1,68 @@
+#
+# Source/amigami/smakefile - Amigami RSS/Atom reader
+#
+
+CC = sc
+LD = slink
+RM = delete force quiet
+
+OBJS = main.o libbases.o version.o utf8fold.o amlog.o datefmt.o \
+	rssparse.o rssfree.o feedstore.o feedcache.o fetch.o rtb_article.o \
+	gui_main.o gui_feeds.o gui_articles.o gui_speedbar.o
+
+all: Amigami
+
+Amigami: $(OBJS) smakefile.wth
+	$(LD) WITH smakefile.wth WITH LIB:utillib.with
+
+main.o: main.c
+	$(CC) main.c
+
+libbases.o: libbases.c
+	$(CC) libbases.c
+
+version.o: version.c
+	$(CC) version.c
+
+utf8fold.o: utf8fold.c utf8fold.h
+	$(CC) utf8fold.c
+
+amlog.o: amlog.c amlog.h
+	$(CC) amlog.c
+
+datefmt.o: datefmt.c datefmt.h utf8fold.h
+	$(CC) datefmt.c
+
+rssparse.o: rssparse.c rss.h utf8fold.h amlog.h
+	$(CC) rssparse.c
+
+rssfree.o: rssfree.c rss.h
+	$(CC) rssfree.c
+
+feedstore.o: feedstore.c feedstore.h rss.h utf8fold.h amlog.h
+	$(CC) feedstore.c
+
+feedcache.o: feedcache.c feedcache.h
+	$(CC) feedcache.c
+
+fetch.o: fetch.c fetch.h
+	$(CC) fetch.c
+
+rtb_article.o: rtb_article.c rtb_article.h gui.h rss.h utf8fold.h datefmt.h
+	$(CC) rtb_article.c
+
+gui_main.o: gui_main.c gui.h feedstore.h fetch.h rtb_article.h amlog.h
+	$(CC) gui_main.c
+
+gui_feeds.o: gui_feeds.c gui.h utf8fold.h rtb_article.h feedcache.h amlog.h
+	$(CC) gui_feeds.c
+
+gui_articles.o: gui_articles.c gui.h utf8fold.h datefmt.h rtb_article.h amlog.h
+	$(CC) gui_articles.c
+
+gui_speedbar.o: gui_speedbar.c gui.h rtb_article.h feedcache.h amlog.h
+	$(CC) gui_speedbar.c
+
+clean:
+	-$(RM) \#?.o
+	-$(RM) Amigami

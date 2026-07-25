@@ -1,0 +1,4 @@
+FROM     sc:lib/c.o main.o libbases.o version.o utf8fold.o amlog.o datefmt.o rssparse.o rssfree.o feedstore.o feedcache.o fetch.o rtb_article.o gui_main.o gui_feeds.o gui_articles.o gui_speedbar.o
+LIB      ///tb.lib/SDK/lib/tb.lib LIB:reaction.lib LIB:sc.lib LIB:amiga.lib
+NODEBUG
+TO       Amigami
