@@ -49,11 +49,10 @@ sb_add_button(struct AmigamiGui *gui, ULONG id, STRPTR text,
     Object *lab;
     TBImage *img;
     struct Node *node;
-    struct TagItem tags[4];
+    struct TagItem tags[5];
     ULONG ti;
     ULONG slot;
 
-    (void)help;
     slot = gui->ag_SbCount;
     if (slot >= 4) {
         return FALSE;
@@ -71,6 +70,11 @@ sb_add_button(struct AmigamiGui *gui, ULONG id, STRPTR text,
             tags[ti].ti_Tag = SBNA_Highlight;
             tags[ti].ti_Data = SBH_RECESS;
             ti++;
+            if (help != NULL) {
+                tags[ti].ti_Tag = SBNA_Help;
+                tags[ti].ti_Data = (ULONG)help;
+                ti++;
+            }
             tags[ti].ti_Tag = TAG_DONE;
             tags[ti].ti_Data = 0;
             node = NewSpeedButtonNodeFromTBImage(img, TBA_Size24, id,
@@ -90,12 +94,22 @@ sb_add_button(struct AmigamiGui *gui, ULONG id, STRPTR text,
     if (lab == NULL) {
         return FALSE;
     }
-    node = AllocSpeedButtonNode(id,
-        SBNA_Image, (ULONG)lab,
-        SBNA_Enabled, TRUE,
-        SBNA_Spacing, 2,
-        SBNA_Highlight, SBH_RECESS,
-        TAG_DONE);
+    if (help != NULL) {
+        node = AllocSpeedButtonNode(id,
+            SBNA_Image, (ULONG)lab,
+            SBNA_Enabled, TRUE,
+            SBNA_Spacing, 2,
+            SBNA_Highlight, SBH_RECESS,
+            SBNA_Help, (ULONG)help,
+            TAG_DONE);
+    } else {
+        node = AllocSpeedButtonNode(id,
+            SBNA_Image, (ULONG)lab,
+            SBNA_Enabled, TRUE,
+            SBNA_Spacing, 2,
+            SBNA_Highlight, SBH_RECESS,
+            TAG_DONE);
+    }
     if (node == NULL) {
         DisposeObject(lab);
         return FALSE;
@@ -136,19 +150,25 @@ AmigamiSpeedBarInit(struct AmigamiGui *gui)
     }
 
     if (!sb_add_button(gui, SBA_ADD, (STRPTR)"Add",
-            (STRPTR)TB_SYM_NEW, (STRPTR)"Add feed", use_icons)) {
+            (STRPTR)TB_SYM_NEW,
+            (STRPTR)"Add a feed subscription", use_icons)) {
         return FALSE;
     }
     if (!sb_add_button(gui, SBA_REMOVE, (STRPTR)"Remove",
-            (STRPTR)TB_SYM_DELETE, (STRPTR)"Remove feed", use_icons)) {
+            (STRPTR)TB_SYM_DELETE,
+            (STRPTR)"Remove the selected feed", use_icons)) {
         return FALSE;
     }
     if (!sb_add_button(gui, SBA_REFRESH, (STRPTR)"Refresh",
-            (STRPTR)TB_SYM_RELOAD, (STRPTR)"Force reload", use_icons)) {
+            (STRPTR)TB_SYM_RELOAD,
+            (STRPTR)"Force-reload current feed from the network",
+            use_icons)) {
         return FALSE;
     }
     if (!sb_add_button(gui, SBA_OPEN, (STRPTR)"Open",
-            (STRPTR)TB_SYM_OPEN, (STRPTR)"Open article", use_icons)) {
+            (STRPTR)TB_SYM_OPEN,
+            (STRPTR)"Open the selected article in a browser",
+            use_icons)) {
         return FALSE;
     }
 
@@ -351,6 +371,8 @@ AmigamiEnsureFeedLoaded(struct AmigamiGui *gui, struct AmFeed *feed,
     }
     FreeVec(body);
     busy(gui, FALSE);
+    AmigamiGuiNoteSync(gui);
+    AmigamiGuiRefreshScreenTitle(gui);
     return TRUE;
 }
 
@@ -418,6 +440,7 @@ dup_item_shallow(struct FeedItem *src)
     } else if (src->guid != NULL) {
         /* reuse guid slot unused - leave author empty */
     }
+    it->fi_Read = src->fi_Read;
     return it;
 }
 
@@ -474,7 +497,6 @@ AmigamiShowSmartToday(struct AmigamiGui *gui, BOOL forceFetch)
     struct AmFeed *feed;
     struct FeedItem *item;
     struct FeedChannel *ch;
-    UBYTE msg[80];
 
     gui->ag_ViewMode = AMVIEW_TODAY;
     gui->ag_SelectedFeed = NULL;
@@ -511,8 +533,7 @@ AmigamiShowSmartToday(struct AmigamiGui *gui, BOOL forceFetch)
 
     gui->ag_SmartChannel = ch;
     AmigamiArticlesShowChannel(gui, ch, (STRPTR)"Today");
-    sprintf((char *)msg, "Today - %ld items", (long)ch->itemcount);
-    AmigamiGuiSetStatus(gui, msg);
+    AmigamiGuiRefreshScreenTitle(gui);
 }
 
 void
@@ -521,7 +542,6 @@ AmigamiShowSmartAll(struct AmigamiGui *gui, BOOL forceFetch)
     struct AmFeed *feed;
     struct FeedItem *item;
     struct FeedChannel *ch;
-    UBYTE msg[80];
 
     gui->ag_ViewMode = AMVIEW_ALL;
     gui->ag_SelectedFeed = NULL;
@@ -556,15 +576,13 @@ AmigamiShowSmartAll(struct AmigamiGui *gui, BOOL forceFetch)
 
     gui->ag_SmartChannel = ch;
     AmigamiArticlesShowChannel(gui, ch, (STRPTR)"All Feeds");
-    sprintf((char *)msg, "All Feeds - %ld items", (long)ch->itemcount);
-    AmigamiGuiSetStatus(gui, msg);
+    AmigamiGuiRefreshScreenTitle(gui);
 }
 
 void
 AmigamiRefreshSelected(struct AmigamiGui *gui)
 {
     struct AmFeed *feed;
-    UBYTE msg[128];
 
     if (gui->ag_ViewMode == AMVIEW_TODAY) {
         AmigamiShowSmartToday(gui, TRUE);
@@ -587,9 +605,7 @@ AmigamiRefreshSelected(struct AmigamiGui *gui)
 
     AmigamiFeedsRebuild(gui);
     AmigamiArticlesShowFeed(gui, feed);
-    sprintf((char *)msg, "%ld items - %s (reloaded)",
-        (long)feed->af_Channel->itemcount, (char *)feed->af_Title);
-    AmigamiGuiSetStatus(gui, msg);
+    AmigamiGuiRefreshScreenTitle(gui);
 }
 
 void

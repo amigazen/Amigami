@@ -190,6 +190,37 @@ AmigamiArticlesShowFeed(struct AmigamiGui *gui, struct AmFeed *feed)
     AmigamiArticlesShowChannel(gui, feed->af_Channel, feed->af_Title);
 }
 
+static void
+mark_item_read(struct AmigamiGui *gui, struct FeedItem *item)
+{
+    struct AmFeed *feed;
+    struct FeedItem *it;
+
+    if (item == NULL) {
+        return;
+    }
+    item->fi_Read = TRUE;
+
+    /* Smart Today/All use shallow copies - mirror read onto originals. */
+    if (gui == NULL || item->link == NULL || item->link[0] == '\0') {
+        return;
+    }
+    feed = (struct AmFeed *)gui->ag_Store.fs_Feeds.lh_Head;
+    while (feed != NULL && feed->af_Node.ln_Succ != NULL) {
+        if (feed->af_Channel != NULL) {
+            it = feed->af_Channel->items;
+            while (it != NULL) {
+                if (it != item && it->link != NULL &&
+                    stricmp((char *)it->link, (char *)item->link) == 0) {
+                    it->fi_Read = TRUE;
+                }
+                it = it->next;
+            }
+        }
+        feed = (struct AmFeed *)feed->af_Node.ln_Succ;
+    }
+}
+
 void
 AmigamiArticlesHandleSelect(struct AmigamiGui *gui)
 {
@@ -210,9 +241,8 @@ AmigamiArticlesHandleSelect(struct AmigamiGui *gui)
     item = (struct FeedItem *)userdata;
     gui->ag_SelectedItem = item;
     if (item != NULL) {
+        mark_item_read(gui, item);
         AmigamiPreviewShowItem(gui, item);
-        if (item->title != NULL) {
-            AmigamiGuiSetStatus(gui, (STRPTR)item->title);
-        }
+        AmigamiGuiRefreshScreenTitle(gui);
     }
 }

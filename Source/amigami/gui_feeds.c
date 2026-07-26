@@ -251,7 +251,6 @@ AmigamiFeedsHandleSelect(struct AmigamiGui *gui)
     struct Node *node;
     APTR userdata;
     struct AmFeed *feed;
-    UBYTE msg[128];
 
     node = NULL;
     GetAttr(LISTBROWSER_SelectedNode, gui->ag_FeedsLB, (ULONG *)&node);
@@ -300,9 +299,7 @@ AmigamiFeedsHandleSelect(struct AmigamiGui *gui)
     /* Update item count in-place - full rebuild flickers and jumps. */
     feeds_update_count(gui, feed);
     AmigamiArticlesShowFeed(gui, feed);
-    sprintf((char *)msg, "%ld items - %s",
-        (long)feed->af_Channel->itemcount, (char *)feed->af_Title);
-    AmigamiGuiSetStatus(gui, msg);
+    AmigamiGuiRefreshScreenTitle(gui);
 }
 
 BOOL
@@ -445,7 +442,7 @@ AmigamiFeedsAddDialog(struct AmigamiGui *gui)
         }
         AmFeedStoreSave(&gui->ag_Store);
         AmigamiFeedsRebuild(gui);
-        AmigamiGuiSetStatus(gui, (STRPTR)"Subscription added");
+        AmigamiGuiRefreshScreenTitle(gui);
         return TRUE;
     }
     return FALSE;
@@ -467,5 +464,5 @@ AmigamiFeedsRemoveSelected(struct AmigamiGui *gui)
     AmigamiFeedsRebuild(gui);
     AmigamiArticlesClear(gui);
     AmigamiPreviewShowHint(gui, (STRPTR)"Select Today, All Feeds, or a feed");
-    AmigamiGuiSetStatus(gui, (STRPTR)"Subscription removed");
+    AmigamiGuiRefreshScreenTitle(gui);
 }

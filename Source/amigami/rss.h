@@ -32,6 +32,7 @@ struct FeedItem
     long pubdatelen;
     long authorlen;
     long guidlen;
+    BOOL fi_Read; /* TRUE after user opened the item in preview */
 };
 
 struct FeedChannel

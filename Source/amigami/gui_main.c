@@ -5,10 +5,13 @@
  * gui_main.c - Amigami main window (NetNewsWire three-pane layout)
  *
  *   +------------------------------------------------------------------+
- *   | [Add] [Remove] [Refresh] [Open]              status              |
+ *   | [Add] [Remove] [Refresh] [Open]                                  |
  *   +----------+-------------------+-----------------------------------+
  *   | Feeds    || Articles         || Preview (largest) + scroller     |
  *   +----------+-------------------+-----------------------------------+
+ *
+ * Status is WA_ScreenTitle (persistent stats; ephemeral errors clear on
+ * the next click/menu action).
  */
 
 #include <exec/types.h>
@@ -20,6 +23,7 @@
 #include <proto/dos.h>
 #include <proto/graphics.h>
 #include <proto/layout.h>
+#include <dos/datetime.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -40,15 +44,14 @@ extern struct Library *HttpBase;
 extern struct Library *SpeedBarBase;
 
 static struct NewMenu amigami_newmenu[] = {
-    { NM_TITLE, (STRPTR)"Project", 0, 0, 0, 0 },
-    { NM_ITEM,  (STRPTR)"Quit", (STRPTR)"Q", 0, 0, (APTR)MID_QUIT },
-
-    { NM_TITLE, (STRPTR)"Feed", 0, 0, 0, 0 },
+    { NM_TITLE, (STRPTR)"Amigami", 0, 0, 0, 0 },
     { NM_ITEM,  (STRPTR)"Add Feed...", (STRPTR)"A", 0, 0, (APTR)MID_ADD_FEED },
     { NM_ITEM,  (STRPTR)"Remove Feed", (STRPTR)"D", 0, 0, (APTR)MID_REMOVE_FEED },
     { NM_ITEM,  NM_BARLABEL, 0, 0, 0, 0 },
     { NM_ITEM,  (STRPTR)"Refresh", (STRPTR)"R", 0, 0, (APTR)MID_REFRESH },
     { NM_ITEM,  (STRPTR)"Open Article", (STRPTR)"O", 0, 0, (APTR)MID_OPEN },
+    { NM_ITEM,  NM_BARLABEL, 0, 0, 0, 0 },
+    { NM_ITEM,  (STRPTR)"Quit", (STRPTR)"Q", 0, 0, (APTR)MID_QUIT },
 
     { NM_TITLE, (STRPTR)"View", 0, 0, 0, 0 },
     { NM_ITEM,  (STRPTR)"Show/Hide Feeds", (STRPTR)"F", 0, 0,
@@ -58,26 +61,155 @@ static struct NewMenu amigami_newmenu[] = {
 };
 
 void
+AmigamiGuiNoteSync(struct AmigamiGui *gui)
+{
+    if (gui == NULL) {
+        return;
+    }
+    DateStamp(&gui->ag_LastSync);
+    gui->ag_LastSyncValid = TRUE;
+}
+
+static ULONG
+count_unread_in_channel(struct FeedChannel *ch)
+{
+    struct FeedItem *it;
+    ULONG n;
+
+    n = 0;
+    if (ch == NULL) {
+        return 0;
+    }
+    it = ch->items;
+    while (it != NULL) {
+        if (!it->fi_Read) {
+            n++;
+        }
+        it = it->next;
+    }
+    return n;
+}
+
+static ULONG
+count_unread_all(struct AmigamiGui *gui)
+{
+    struct AmFeed *feed;
+    ULONG n;
+
+    n = 0;
+    if (gui == NULL) {
+        return 0;
+    }
+    feed = (struct AmFeed *)gui->ag_Store.fs_Feeds.lh_Head;
+    while (feed != NULL && feed->af_Node.ln_Succ != NULL) {
+        n += count_unread_in_channel(feed->af_Channel);
+        feed = (struct AmFeed *)feed->af_Node.ln_Succ;
+    }
+    return n;
+}
+
+static void
+format_sync_ago(struct AmigamiGui *gui, UBYTE *out, ULONG outMax)
+{
+    struct DateStamp now;
+    LONG mins;
+
+    if (out == NULL || outMax == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (gui == NULL || !gui->ag_LastSyncValid) {
+        strncpy((char *)out, "never synced", outMax - 1);
+        out[outMax - 1] = '\0';
+        return;
+    }
+
+    DateStamp(&now);
+    mins = (LONG)(now.ds_Days - gui->ag_LastSync.ds_Days) * (24L * 60L) +
+        (LONG)(now.ds_Minute - gui->ag_LastSync.ds_Minute);
+    if (now.ds_Tick < gui->ag_LastSync.ds_Tick && mins > 0) {
+        mins--;
+    }
+    if (mins < 0) {
+        mins = 0;
+    }
+
+    if (mins < 1) {
+        strncpy((char *)out, "just now", outMax - 1);
+    } else if (mins == 1) {
+        strncpy((char *)out, "1 min ago", outMax - 1);
+    } else if (mins < 60) {
+        sprintf((char *)out, "%ld min ago", (long)mins);
+    } else if (mins < 120) {
+        strncpy((char *)out, "1 hr ago", outMax - 1);
+    } else if (mins < 24 * 60) {
+        sprintf((char *)out, "%ld hr ago", (long)(mins / 60));
+    } else if (mins < 48 * 60) {
+        strncpy((char *)out, "1 day ago", outMax - 1);
+    } else {
+        sprintf((char *)out, "%ld days ago", (long)(mins / (24 * 60)));
+    }
+    out[outMax - 1] = '\0';
+}
+
+static void
+apply_screen_title(struct AmigamiGui *gui)
+{
+    if (gui == NULL || gui->ag_Window == NULL) {
+        return;
+    }
+    /* ~0 = leave window title unchanged */
+    SetWindowTitles(gui->ag_Window, (STRPTR)~0, (STRPTR)gui->ag_ScreenTitle);
+}
+
+void
+AmigamiGuiRefreshScreenTitle(struct AmigamiGui *gui)
+{
+    ULONG unread;
+    ULONG feeds;
+    UBYTE ago[40];
+
+    if (gui == NULL) {
+        return;
+    }
+
+    unread = count_unread_all(gui);
+    feeds = gui->ag_Store.fs_Count;
+    format_sync_ago(gui, ago, sizeof(ago));
+
+    sprintf((char *)gui->ag_ScreenTitle,
+        "Amigami - %lu unread, %lu feeds - %s",
+        (unsigned long)unread, (unsigned long)feeds, (char *)ago);
+    gui->ag_ScreenTitle[sizeof(gui->ag_ScreenTitle) - 1] = '\0';
+    gui->ag_EphemeralTitle = FALSE;
+    apply_screen_title(gui);
+}
+
+void
 AmigamiGuiSetStatus(struct AmigamiGui *gui, STRPTR text)
 {
     if (gui == NULL) {
         return;
     }
-    if (text == NULL) {
-        text = (STRPTR)"";
+    if (text == NULL || text[0] == '\0') {
+        AmigamiGuiRefreshScreenTitle(gui);
+        return;
     }
-    strncpy((char *)gui->ag_StatusBuf, (char *)text,
-        sizeof(gui->ag_StatusBuf) - 1);
-    gui->ag_StatusBuf[sizeof(gui->ag_StatusBuf) - 1] = '\0';
+    strncpy((char *)gui->ag_ScreenTitle, (char *)text,
+        sizeof(gui->ag_ScreenTitle) - 1);
+    gui->ag_ScreenTitle[sizeof(gui->ag_ScreenTitle) - 1] = '\0';
+    gui->ag_EphemeralTitle = TRUE;
+    apply_screen_title(gui);
+}
 
-    if (gui->ag_Status != NULL) {
-        if (gui->ag_Window != NULL) {
-            SetGadgetAttrs((struct Gadget *)gui->ag_Status, gui->ag_Window,
-                NULL, GA_Text, (ULONG)gui->ag_StatusBuf, TAG_DONE);
-        } else {
-            SetAttrs(gui->ag_Status, GA_Text, (ULONG)gui->ag_StatusBuf,
-                TAG_DONE);
-        }
+void
+AmigamiGuiNoteUserActivity(struct AmigamiGui *gui)
+{
+    if (gui == NULL) {
+        return;
+    }
+    if (gui->ag_EphemeralTitle) {
+        AmigamiGuiRefreshScreenTitle(gui);
     }
 }
 
@@ -99,7 +231,7 @@ AmigamiGuiToggleFeeds(struct AmigamiGui *gui)
                 CHILD_MinWidth, 140,
                 CHILD_WeightBar, TRUE,
             TAG_DONE);
-        AmigamiGuiSetStatus(gui, (STRPTR)"Feeds pane shown");
+        AmigamiGuiRefreshScreenTitle(gui);
     } else {
         SetGadgetAttrs((struct Gadget *)gui->ag_FeedsLB, gui->ag_Window, NULL,
             GA_Hidden, TRUE, TAG_DONE);
@@ -109,7 +241,7 @@ AmigamiGuiToggleFeeds(struct AmigamiGui *gui)
                 CHILD_MinWidth, 0,
                 CHILD_WeightBar, FALSE,
             TAG_DONE);
-        AmigamiGuiSetStatus(gui, (STRPTR)"Feeds pane hidden");
+        AmigamiGuiRefreshScreenTitle(gui);
     }
 
     if (gui->ag_Window != NULL && gui->ag_Layout != NULL) {
@@ -136,6 +268,94 @@ gui_init_pens(struct AmigamiGui *gui)
     }
 }
 
+static void
+gui_build_hints(struct AmigamiGui *gui)
+{
+    ULONG n;
+
+    n = 0;
+
+    /* Speedbar buttons (one GA_ID, distinct hi_Code per button). */
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_SPEEDBAR;
+    gui->ag_Hints[n].hi_Code = (WORD)SBA_ADD;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Add a feed subscription";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_SPEEDBAR;
+    gui->ag_Hints[n].hi_Code = (WORD)SBA_REMOVE;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Remove the selected feed";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_SPEEDBAR;
+    gui->ag_Hints[n].hi_Code = (WORD)SBA_REFRESH;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Force-reload current feed from the network";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_SPEEDBAR;
+    gui->ag_Hints[n].hi_Code = (WORD)SBA_OPEN;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Open the selected article in a browser";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    /* Fallback text toolbar (when speedbar.gadget / tb.lib unavailable). */
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_BTN_ADD;
+    gui->ag_Hints[n].hi_Code = -1;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Add a feed subscription";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_BTN_REMOVE;
+    gui->ag_Hints[n].hi_Code = -1;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Remove the selected feed";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_BTN_REFRESH;
+    gui->ag_Hints[n].hi_Code = -1;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Force-reload current feed from the network";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_BTN_OPEN;
+    gui->ag_Hints[n].hi_Code = -1;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Open the selected article in a browser";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_FEEDS;
+    gui->ag_Hints[n].hi_Code = -1;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Select Today, All Feeds, or a subscription";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_ARTICLES;
+    gui->ag_Hints[n].hi_Code = -1;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Select an article to preview";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_PREVIEW;
+    gui->ag_Hints[n].hi_Code = -1;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Article preview - click links to open";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    gui->ag_Hints[n].hi_GadgetID = (WORD)GID_SCROLLER;
+    gui->ag_Hints[n].hi_Code = -1;
+    gui->ag_Hints[n].hi_Text = (STRPTR)"Scroll the article preview";
+    gui->ag_Hints[n].hi_Flags = 0;
+    n++;
+
+    /* Terminator */
+    gui->ag_Hints[n].hi_GadgetID = -1;
+    gui->ag_Hints[n].hi_Code = -1;
+    gui->ag_Hints[n].hi_Text = NULL;
+    gui->ag_Hints[n].hi_Flags = 0;
+}
+
 static BOOL
 gui_open_main(struct AmigamiGui *gui)
 {
@@ -157,7 +377,7 @@ gui_open_main(struct AmigamiGui *gui)
         return FALSE;
     }
 
-    strcpy((char *)gui->ag_StatusBuf, "Ready");
+    strcpy((char *)gui->ag_ScreenTitle, "Amigami");
 
     if (RichTextBrowserBase == NULL) {
         PutStr("Amigami: richtextbrowser.gadget missing\n");
@@ -193,25 +413,25 @@ gui_open_main(struct AmigamiGui *gui)
             GA_ID, GID_BTN_ADD,
             GA_RelVerify, TRUE,
             GA_Text, "_Add",
-            GA_GadgetHelpText, (ULONG)"Add feed subscription",
+            GA_GadgetHelpText, (ULONG)"Add a feed subscription",
         ButtonEnd;
         gui->ag_BtnRemove = ButtonObject,
             GA_ID, GID_BTN_REMOVE,
             GA_RelVerify, TRUE,
             GA_Text, "Re_move",
-            GA_GadgetHelpText, (ULONG)"Remove selected feed",
+            GA_GadgetHelpText, (ULONG)"Remove the selected feed",
         ButtonEnd;
         gui->ag_BtnRefresh = ButtonObject,
             GA_ID, GID_BTN_REFRESH,
             GA_RelVerify, TRUE,
             GA_Text, "_Refresh",
-            GA_GadgetHelpText, (ULONG)"Force reload (ignores memory/T: cache)",
+            GA_GadgetHelpText, (ULONG)"Force-reload current feed from the network",
         ButtonEnd;
         gui->ag_BtnOpen = ButtonObject,
             GA_ID, GID_BTN_OPEN,
             GA_RelVerify, TRUE,
             GA_Text, "_Open",
-            GA_GadgetHelpText, (ULONG)"Open article link (OpenURL)",
+            GA_GadgetHelpText, (ULONG)"Open the selected article in a browser",
         ButtonEnd;
         if (gui->ag_BtnAdd == NULL || gui->ag_BtnRemove == NULL ||
             gui->ag_BtnRefresh == NULL || gui->ag_BtnOpen == NULL) {
@@ -219,20 +439,10 @@ gui_open_main(struct AmigamiGui *gui)
         }
     }
 
-    gui->ag_Status = ButtonObject,
-        GA_ID, GID_STATUS,
-        GA_Text, gui->ag_StatusBuf,
-        GA_ReadOnly, TRUE,
-        GA_GadgetHelpText, (ULONG)"Status",
-    ButtonEnd;
-    if (gui->ag_Status == NULL) {
-        return FALSE;
-    }
-
     gui->ag_FeedsLB = ListBrowserObject,
         GA_ID, GID_FEEDS,
         GA_RelVerify, TRUE,
-        GA_GadgetHelpText, (ULONG)"Today / All Feeds / subscriptions",
+        GA_GadgetHelpText, (ULONG)"Select Today, All Feeds, or a subscription",
         LISTBROWSER_Labels, (ULONG)&gui->ag_FeedNodes,
         LISTBROWSER_ColumnInfo, (ULONG)gui->ag_FeedCI,
         LISTBROWSER_ColumnTitles, TRUE,
@@ -246,7 +456,7 @@ gui_open_main(struct AmigamiGui *gui)
     gui->ag_ArticlesLB = ListBrowserObject,
         GA_ID, GID_ARTICLES,
         GA_RelVerify, TRUE,
-        GA_GadgetHelpText, (ULONG)"Articles in selected feed",
+        GA_GadgetHelpText, (ULONG)"Select an article to preview",
         LISTBROWSER_Labels, (ULONG)&gui->ag_ArticleNodes,
         LISTBROWSER_ColumnInfo, (ULONG)gui->ag_ArticleCI,
         LISTBROWSER_ColumnTitles, TRUE,
@@ -261,7 +471,7 @@ gui_open_main(struct AmigamiGui *gui)
     gui->ag_Rtb = NewObject(rtbClass, NULL,
         GA_ID, GID_PREVIEW,
         GA_RelVerify, TRUE,
-        GA_GadgetHelpText, (ULONG)"Article preview",
+        GA_GadgetHelpText, (ULONG)"Article preview - click links to open",
         RTB_SelectBlocks, FALSE,
         RTB_BlockCap, 64,
         RTB_Overscan, 32,
@@ -271,7 +481,7 @@ gui_open_main(struct AmigamiGui *gui)
         GA_ID, GID_SCROLLER,
         GA_RelVerify, TRUE,
         GA_Immediate, FALSE,
-        GA_GadgetHelpText, (ULONG)"Preview scroll",
+        GA_GadgetHelpText, (ULONG)"Scroll the article preview",
         SCROLLER_Orientation, SORIENT_VERT,
         SCROLLER_Arrows, TRUE,
     ScrollerEnd;
@@ -284,8 +494,6 @@ gui_open_main(struct AmigamiGui *gui)
     if (gui->ag_UseSpeedBar) {
         top_row = HLayoutObject,
             LAYOUT_AddChild, gui->ag_SpeedBar,
-            CHILD_WeightedWidth, 0,
-            LAYOUT_AddChild, gui->ag_Status,
             CHILD_WeightedWidth, 100,
         LayoutEnd;
     } else {
@@ -298,8 +506,6 @@ gui_open_main(struct AmigamiGui *gui)
             CHILD_WeightedWidth, 0,
             LAYOUT_AddChild, gui->ag_BtnOpen,
             CHILD_WeightedWidth, 0,
-            LAYOUT_AddChild, gui->ag_Status,
-            CHILD_WeightedWidth, 100,
         LayoutEnd;
     }
 
@@ -345,8 +551,11 @@ gui_open_main(struct AmigamiGui *gui)
         return FALSE;
     }
 
+    gui_build_hints(gui);
+
     gui->ag_WinObj = WindowObject,
         WA_Title, "Amigami",
+        WA_ScreenTitle, gui->ag_ScreenTitle,
         WA_DragBar, TRUE,
         WA_CloseGadget, TRUE,
         WA_DepthGadget, TRUE,
@@ -356,6 +565,7 @@ gui_open_main(struct AmigamiGui *gui)
         WA_InnerWidth, 780,
         WA_InnerHeight, 440,
         WINDOW_Position, WPOS_CENTERSCREEN,
+        WINDOW_HintInfo, (ULONG)gui->ag_Hints,
         WINDOW_GadgetHelp, TRUE,
         WINDOW_NewMenu, (ULONG)amigami_newmenu,
         WINDOW_ParentGroup, gui->ag_Layout,
@@ -376,6 +586,7 @@ gui_open_main(struct AmigamiGui *gui)
     }
 
     gui_init_pens(gui);
+    AmigamiGuiRefreshScreenTitle(gui);
     return TRUE;
 }
 
@@ -399,7 +610,6 @@ gui_close_main(struct AmigamiGui *gui)
         gui->ag_ArticlesLB = NULL;
         gui->ag_Rtb = NULL;
         gui->ag_Scroller = NULL;
-        gui->ag_Status = NULL;
         gui->ag_BtnAdd = NULL;
         gui->ag_BtnRemove = NULL;
         gui->ag_BtnRefresh = NULL;
@@ -429,6 +639,7 @@ gui_handle_menu(struct AmigamiGui *gui, UWORD code)
             break;
         }
         id = (ULONG)GTMENUITEM_USERDATA(item);
+        AmigamiGuiNoteUserActivity(gui);
         switch (id) {
         case MID_QUIT:
             gui->ag_QuitRequested = TRUE;
@@ -476,6 +687,7 @@ gui_handle(struct AmigamiGui *gui)
             }
             break;
         case WMHI_GADGETUP:
+            AmigamiGuiNoteUserActivity(gui);
             switch (result & WMHI_GADGETMASK) {
             case GID_BTN_ADD:
                 AmigamiFeedsAddDialog(gui);

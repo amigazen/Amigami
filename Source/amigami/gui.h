@@ -12,6 +12,7 @@
 #include <exec/lists.h>
 #include <intuition/intuition.h>
 #include <libraries/gadtools.h>
+#include <dos/datetime.h>
 
 #include <proto/window.h>
 #include <classes/window.h>
@@ -48,7 +49,6 @@ enum {
     GID_BTN_REMOVE,
     GID_BTN_REFRESH,
     GID_BTN_OPEN,
-    GID_STATUS,
     GID_FEEDS,
     GID_ARTICLES,
     GID_PREVIEW,
@@ -98,7 +98,6 @@ struct AmigamiGui
     Object             *ag_ArticlesLB;
     Object             *ag_Rtb;
     Object             *ag_Scroller;
-    Object             *ag_Status;
     Object             *ag_BtnAdd;       /* fallback text buttons */
     Object             *ag_BtnRemove;
     Object             *ag_BtnRefresh;
@@ -128,18 +127,38 @@ struct AmigamiGui
 
     WORD                ag_PenFg;
     WORD                ag_PenFill;
-    UBYTE               ag_StatusBuf[160];
+    UBYTE               ag_ScreenTitle[160]; /* WA_ScreenTitle / SetWindowTitles */
     UBYTE               ag_CaFile[256];
+    struct DateStamp    ag_LastSync;       /* zeroed = never synced */
+    BOOL                ag_LastSyncValid;
+    BOOL                ag_EphemeralTitle;  /* TRUE while showing a transient msg */
     BOOL                ag_Verbose;
     BOOL                ag_Insecure;
     BOOL                ag_QuitRequested;
+
+    /* OS 3.2 window.class bubble help (WINDOW_HintInfo). */
+    struct HintInfo     ag_Hints[16];
 };
 
 #define AMIGAMI_DEFAULT_CA "DEVS:Certificates/cacert.pem"
 
 LONG AmigamiGuiRun(STRPTR cafile, BOOL insecure, BOOL verbose);
 
+/*
+ * Ephemeral screen-title message (errors / progress). Cleared on the next
+ * user engagement via AmigamiGuiNoteUserActivity().
+ */
 void AmigamiGuiSetStatus(struct AmigamiGui *gui, STRPTR text);
+
+/* Rebuild persistent screen title: Amigami - N unread, M feeds - sync ago */
+void AmigamiGuiRefreshScreenTitle(struct AmigamiGui *gui);
+
+/* Restore persistent title if an ephemeral message is showing. */
+void AmigamiGuiNoteUserActivity(struct AmigamiGui *gui);
+
+/* Record successful network sync time for the screen title. */
+void AmigamiGuiNoteSync(struct AmigamiGui *gui);
+
 void AmigamiGuiToggleFeeds(struct AmigamiGui *gui);
 
 BOOL AmigamiFeedsInit(struct AmigamiGui *gui);
